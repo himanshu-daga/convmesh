@@ -72,6 +72,8 @@ if args.mesh_path == 'autodetect':
         args.mesh_path = 'mesh_templates/uvsphere_31rings.obj'
     elif args.dataset == 'cub':
         args.mesh_path = 'mesh_templates/uvsphere_16rings.obj'
+    elif args.dataset == 'sofa':
+        args.mesh_path = 'mesh_templates/uvsphere_31rings.obj'
     else:
         raise
     print('Using autodetected mesh', args.mesh_path)
@@ -87,6 +89,56 @@ else:
     renderer_res = args.image_resolution
     
 renderer = Renderer(renderer_res, renderer_res)
+
+# >>> HD SOFA Loader <<<<
+from skimage.io import imread
+from skimage.transform import resize
+class ImageSofaset(torch.utils.data.Dataset):
+    # python run_reconstruction.py --name sofa_hd --dataset sofa --batch_size 2
+    def __init__(self):
+        self.dataset = "sofa"
+        self.res = args.image_resolution
+
+    def __len__(self):
+        return 3
+
+    def __getitem__(self,index):
+        base = "/home/ubuntu/work/convmesh/sofa_data/"
+        img_file = base+str(index+1)+'.png'
+        img = imread(img_file)
+        print("Loading SOFA IMG: ",img.shape, " ",img_file)
+        img = resize(img, (self.res,self.res),anti_aliasing=True)
+        print("Resized SOFA IMG: ",img.shape)
+        
+        mask_file = base+str(index+1)+'m.png'
+        mask = imread(mask_file)
+        print("Loading SOFA MASK: ",mask.shape, " ", mask_file)
+        mask = resize(mask, (self.res,self.res),anti_aliasing=True)
+        print("Resized SOFA MASK: ",mask.shape)
+
+        # mask = mask[:,:,1]
+        # img *= mask[np.newaxis, :, :]
+        img *= mask
+        img = torch.FloatTensor(img)
+        img = img.permute(2,0,1)
+        mask = torch.FloatTensor(mask)
+        mask = mask.permute(2,0,1)
+        ind = torch.LongTensor([index])
+        
+        extra_imgs = []
+        scale = torch.FloatTensor([100.1])
+        # trans = torch.FloatTensor([[200.2],[151.1]])
+        trans = torch.FloatTensor([0,0.1,0])
+        # rot = torch.FloatTensor([[-0.05,-0.05,-0.05],[0.05,0.05,0.05],[0.1,-0.1,0.1]])
+        # rot = np.pad(rot, (0,1), 'constant')
+        # rot[3,3] = 1
+        # rot = torch.FloatTensor([-0.05,0.1,-0.05,0.2])
+        rot = torch.FloatTensor([ 0.08282554,  0.65323734,  0.72993609, -0.18334177])
+        output = torch.cat((img, mask[:1,:,:]), dim=0)
+        # output = output.permute(1,2,0)
+        return (output, *extra_imgs, scale, trans, rot, ind)
+
+        
 
 class ImageDataset(torch.utils.data.Dataset):
     def __init__(self, cmr_dataset, img_size):
@@ -171,6 +223,9 @@ elif dataset_type == 'cub':
     
     debug_ids = [0, 1, 12, 18, 20, 42, 72, 100, 101, 115, 123, 125, 142, 158, 188, 203] # For TensorBoard
 
+elif dataset_type == 'sofa':
+    mesh_ds_train = ImageSofaset()
+    mesh_ds_val = ImageSofaset()
 else:
     raise
 
@@ -240,6 +295,9 @@ def transform_vertices(vtx, gt_scale, gt_translation, gt_rot, gt_idx):
     else:
         scale_delta = 0
         translation_delta = 0
+    print("a: ",qrot(gt_rot, (gt_scale + scale_delta).unsqueeze(-1)*vtx).shape)
+    print("b: ",(gt_translation + translation_delta).unsqueeze(1).shape)
+    # print("tran: ",gt_translation,"trans_delta",translation_delta)
     vtx = qrot(gt_rot, (gt_scale + scale_delta).unsqueeze(-1)*vtx) + (gt_translation + translation_delta).unsqueeze(1)
     vtx = vtx * torch.Tensor([1, -1, -1]).to(vtx.device)
     if args.optimize_z0:
@@ -419,7 +477,7 @@ try:
             optimizer.zero_grad()
             if optimizer_dataset is not None:
                 optimizer_dataset.zero_grad()
-
+            print(X_real.shape)
             pred_tex, mesh_map = generator(X_real)
             raw_vtx = mesh_template.get_vertex_positions(mesh_map)
 

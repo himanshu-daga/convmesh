@@ -37,9 +37,9 @@ def qrot(q, v):
     """
     Quaternion-vector multiplication (rotation of a vector)
     """
+    # print("Hello q,v: ", q.shape, v.shape)
     assert q.shape[-1] == 4
     assert v.shape[-1] == 3
-    
     qvec = q[:, 1:].unsqueeze(1).expand(-1, v.shape[1], -1)
     uv = torch.cross(qvec, v, dim=2)
     uuv = torch.cross(qvec, uv, dim=2)
