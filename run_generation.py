@@ -87,6 +87,54 @@ args = parser.parse_args()
 
 cache_dir = os.path.join('cache', args.dataset)
 
+from skimage.io import imread
+from skimage.transform import resize
+class ImageSofaset(torch.utils.data.Dataset):
+    # python run_reconstruction.py --name sofa_hd --dataset sofa --batch_size 2
+    def __init__(self):
+        self.dataset = "sofa"
+        self.res = args.texture_resolution
+
+    def __len__(self):
+        return 3
+
+    def __getitem__(self,index):
+        base = "/home/ubuntu/work/convmesh/sofa_data/"
+        img_file = base+str(index+1)+'.png'
+        img = imread(img_file)
+        print("Loading SOFA IMG: ",img.shape, " ",img_file)
+        img = resize(img, (self.res,self.res),anti_aliasing=True)
+        print("Resized SOFA IMG: ",img.shape)
+        
+        mask_file = base+str(index+1)+'m.png'
+        mask = imread(mask_file)
+        print("Loading SOFA MASK: ",mask.shape, " ", mask_file)
+        mask = resize(mask, (self.res,self.res),anti_aliasing=True)
+        print("Resized SOFA MASK: ",mask.shape)
+
+        # mask = mask[:,:,1]
+        # img *= mask[np.newaxis, :, :]
+        img *= mask
+        img = torch.FloatTensor(img)
+        img = img.permute(2,0,1)
+        mask = torch.FloatTensor(mask)
+        mask = mask.permute(2,0,1)
+        ind = torch.LongTensor([index])
+        
+        extra_imgs = []
+        scale = torch.FloatTensor([100.1])
+        # trans = torch.FloatTensor([[200.2],[151.1]])
+        trans = torch.FloatTensor([0,0.1,0])
+        # rot = torch.FloatTensor([[-0.05,-0.05,-0.05],[0.05,0.05,0.05],[0.1,-0.1,0.1]])
+        # rot = np.pad(rot, (0,1), 'constant')
+        # rot[3,3] = 1
+        # rot = torch.FloatTensor([-0.05,0.1,-0.05,0.2])
+        rot = torch.FloatTensor([ 0.08282554,  0.65323734,  0.72993609, -0.18334177])
+        output = torch.cat((img, mask[:1,:,:]), dim=0)
+        # output = output.permute(1,2,0)
+        return (output, *extra_imgs, scale, trans, rot, ind)
+
+
 if args.export_sample:
     args.evaluate = True
 
@@ -96,20 +144,22 @@ if args.dataset == 'p3d':
 elif args.dataset == 'cub':
     from data.cub_pseudo_dataset import CubPseudoDataset
     train_ds = CubPseudoDataset(args)
+elif args.dataset == 'sofa':
+    train_ds = ImageSofaset()
 else:
     raise ValueError('Invalid dataset')
 
 if args.mesh_path == 'autodetect':
-    args.mesh_path = train_ds.suggest_mesh_template()
+    args.mesh_path = 'mesh_templates/uvsphere_31rings.obj' #train_ds.suggest_mesh_template()
     print('Using autodetected mesh', args.mesh_path)
         
 if args.num_discriminators == -1:
     # Autodetect
-    args.num_discriminators = train_ds.suggest_num_discriminators()
+    args.num_discriminators = 2 #train_ds.suggest_num_discriminators()
         
 if args.truncation_sigma < 0:
     # Autodetect
-    args.truncation_sigma = train_ds.suggest_truncation_sigma()
+    args.truncation_sigma = 1.0 #train_ds.suggest_truncation_sigma()
     print(f'Using truncation sigma {args.truncation_sigma} for evaluation')
     
 # A few safety checks...
@@ -138,8 +188,11 @@ if args.tensorboard and not args.evaluate:
 gpu_ids = [int(x) for x in args.gpu_ids.split(',')]
 print('Using {} GPUs: {}'.format(len(gpu_ids), gpu_ids))
 torch.cuda.set_device(min(gpu_ids))
-    
-eval_ds = PseudoDatasetForEvaluation(train_ds)
+
+if args.dataset == 'sofa':
+    eval_ds = train_ds
+else:
+    eval_ds = PseudoDatasetForEvaluation(train_ds)
 
 
 train_loader = torch.utils.data.DataLoader(train_ds, batch_size=args.batch_size, num_workers=args.num_workers,
@@ -156,265 +209,265 @@ if not args.texture_only:
 
     mesh_template = MeshTemplate(args.mesh_path, is_symmetric=args.symmetric_g)
 
-    # For real-time FID evaluation
-    if not args.export_sample:
-        evaluation_res = 299 # Same as Inception input resolution
-    else:
-        evaluation_res = 512 # For exporting images: higher resolution
-    renderer = Renderer(evaluation_res, evaluation_res)
-    renderer = nn.DataParallel(renderer, gpu_ids)
+    # # For real-time FID evaluation
+    # if not args.export_sample:
+    #     evaluation_res = 299 # Same as Inception input resolution
+    # else:
+    #     evaluation_res = 512 # For exporting images: higher resolution
+    # renderer = Renderer(evaluation_res, evaluation_res)
+    # renderer = nn.DataParallel(renderer, gpu_ids)
 
-    if not args.export_sample:
-        inception_model = nn.DataParallel(init_inception(), gpu_ids).cuda().eval()
+    # if not args.export_sample:
+    #     inception_model = nn.DataParallel(init_inception(), gpu_ids).cuda().eval()
 
-        # Statistics for real images are computed only once and cached
-        m_real_train, s_real_train = None, None
-        m_real_val, s_real_val = None, None
+    #     # Statistics for real images are computed only once and cached
+    #     m_real_train, s_real_train = None, None
+    #     m_real_val, s_real_val = None, None
 
-        # Load precomputed statistics to speed up FID computation
-        stats = np.load(os.path.join(cache_dir, f'precomputed_fid_{evaluation_res}x{evaluation_res}_train.npz'), allow_pickle=True)
-        m_real_train = stats['stats_m']
-        s_real_train = stats['stats_s'] + np.triu(stats['stats_s'].T, 1)
-        assert stats['num_images'] == len(train_ds), 'Number of images does not match'
-        assert stats['resolution'] == evaluation_res, 'Resolution does not match'
-        stats = None
+    #     # Load precomputed statistics to speed up FID computation
+    #     stats = np.load(os.path.join(cache_dir, f'precomputed_fid_{evaluation_res}x{evaluation_res}_train.npz'), allow_pickle=True)
+    #     m_real_train = stats['stats_m']
+    #     s_real_train = stats['stats_s'] + np.triu(stats['stats_s'].T, 1)
+    #     assert stats['num_images'] == len(train_ds), 'Number of images does not match'
+    #     assert stats['resolution'] == evaluation_res, 'Resolution does not match'
+    #     stats = None
 
-        if args.dataset == 'cub':
-            stats = np.load(os.path.join(cache_dir, f'precomputed_fid_{evaluation_res}x{evaluation_res}_testval.npz'), allow_pickle=True)
-            m_real_val = stats['stats_m']
-            s_real_val = stats['stats_s'] + np.triu(stats['stats_s'].T, 1)
-            n_images_val = stats['num_images']
-            assert n_images_val <= len(train_ds), 'Not supported'
-            assert stats['resolution'] == evaluation_res, 'Resolution does not match'
-            stats = None
+    #     if args.dataset == 'cub':
+    #         stats = np.load(os.path.join(cache_dir, f'precomputed_fid_{evaluation_res}x{evaluation_res}_testval.npz'), allow_pickle=True)
+    #         m_real_val = stats['stats_m']
+    #         s_real_val = stats['stats_s'] + np.triu(stats['stats_s'].T, 1)
+    #         n_images_val = stats['num_images']
+    #         assert n_images_val <= len(train_ds), 'Not supported'
+    #         assert stats['resolution'] == evaluation_res, 'Resolution does not match'
+    #         stats = None
     
 
 
-def evaluate_fid(writer, it, visualization_indices=None, fast=False):
-    global m_real_train, s_real_train, m_real_val, s_real_val
+# def evaluate_fid(writer, it, visualization_indices=None, fast=False):
+#     global m_real_train, s_real_train, m_real_val, s_real_val
     
-    emb_arr_fake_combined = []
-    emb_arr_fake_texture_only = []
-    emb_arr_fake_mesh_only = []
-    emb_arr_real = []
+#     emb_arr_fake_combined = []
+#     emb_arr_fake_texture_only = []
+#     emb_arr_fake_mesh_only = []
+#     emb_arr_real = []
 
-    # Grid for visualization
-    if visualization_indices is not None:
-        indices_to_render = visualization_indices.numpy()
-        shuffle_idx = np.argsort(np.argsort(indices_to_render)) # To restore the original order
-    else:
-        indices_to_render = np.random.choice(len(train_ds), size=16, replace=False)
-        shuffle_idx = None
+#     # Grid for visualization
+#     if visualization_indices is not None:
+#         indices_to_render = visualization_indices.numpy()
+#         shuffle_idx = np.argsort(np.argsort(indices_to_render)) # To restore the original order
+#     else:
+#         indices_to_render = np.random.choice(len(train_ds), size=16, replace=False)
+#         shuffle_idx = None
         
-    with torch.no_grad():
-        generator_running_avg.eval()
+#     with torch.no_grad():
+#         generator_running_avg.eval()
 
-        sample_real = []
-        sample_fake = []
-        sample_fake_texture_only = []
-        sample_fake_mesh_only = []
-        sample_text = [] # For models trained with captions
-        sample_tex_real = []
-        sample_tex_fake = []
-        sample_mesh_map_fake = []
+#         sample_real = []
+#         sample_fake = []
+#         sample_fake_texture_only = []
+#         sample_fake_mesh_only = []
+#         sample_text = [] # For models trained with captions
+#         sample_tex_real = []
+#         sample_tex_fake = []
+#         sample_mesh_map_fake = []
         
-        if args.evaluate:
-            # Deterministic seed, but only in evaluation mode since we do not want to reset
-            # the random state while we train the model (it would cripple the model).
-            # Note that FID scores might still exhibit some variability depending on the batch size.
-            torch.manual_seed(1234)
+#         if args.evaluate:
+#             # Deterministic seed, but only in evaluation mode since we do not want to reset
+#             # the random state while we train the model (it would cripple the model).
+#             # Note that FID scores might still exhibit some variability depending on the batch size.
+#             torch.manual_seed(1234)
         
-        for data in tqdm(eval_loader):
-            for k in ['texture', 'mesh', 'translation', 'scale', 'rotation']:
-                if k in data:
-                    data[k] = data[k].cuda()
+#         for data in tqdm(eval_loader):
+#             for k in ['texture', 'mesh', 'translation', 'scale', 'rotation']:
+#                 if k in data:
+#                     data[k] = data[k].cuda()
 
-            has_pseudogt = 'texture' in data and not fast
+#             has_pseudogt = 'texture' in data and not fast
 
-            if m_real_train is None:
-                # Compute real (only if not cached)
-                assert 'image' in data
-                assert data['image'].shape[2] == evaluation_res
-                assert data['image'].shape[3] == evaluation_res
-                emb_arr_real.append(forward_inception_batch(inception_model, data['image'].cuda()))
+#             if m_real_train is None:
+#                 # Compute real (only if not cached)
+#                 assert 'image' in data
+#                 assert data['image'].shape[2] == evaluation_res
+#                 assert data['image'].shape[3] == evaluation_res
+#                 emb_arr_real.append(forward_inception_batch(inception_model, data['image'].cuda()))
 
-            if args.conditional_class:
-                c = data['class'].cuda()
-                caption = None
-            elif args.conditional_text:
-                c = None
-                caption = tuple([x.cuda() for x in data['caption']])
-            else:
-                c, caption = None, None
+#             if args.conditional_class:
+#                 c = data['class'].cuda()
+#                 caption = None
+#             elif args.conditional_text:
+#                 c = None
+#                 caption = tuple([x.cuda() for x in data['caption']])
+#             else:
+#                 c, caption = None, None
 
-            noise = torch.randn(data['idx'].shape[0], args.latent_dim)
+#             noise = torch.randn(data['idx'].shape[0], args.latent_dim)
             
-            # Gaussian truncation trick
-            sigma = args.truncation_sigma
-            while (noise.abs() > sigma).any():
-                # Rejection sampling
-                mask = noise.abs() > sigma
-                noise[mask] = torch.randn_like(noise[mask])
+#             # Gaussian truncation trick
+#             sigma = args.truncation_sigma
+#             while (noise.abs() > sigma).any():
+#                 # Rejection sampling
+#                 mask = noise.abs() > sigma
+#                 noise[mask] = torch.randn_like(noise[mask])
 
-            noise = noise.cuda()
+#             noise = noise.cuda()
             
-            if noise.shape[0] % len(gpu_ids) == 0:
-                pred_tex, pred_mesh_map, attn_map = trainer('inference', None, None, C=c, caption=caption, noise=noise)
-            else:
-                # Batch dimension is not divisible by number of GPUs --> pad
-                original_bsz = noise.shape[0]
-                padding_bsz = len(gpu_ids) - (noise.shape[0] % len(gpu_ids))
-                def pad_batch(batch):
-                    return torch.cat((batch, torch.zeros((padding_bsz, *batch.shape[1:]),
-                                                         dtype=batch.dtype).to(batch.device)), dim=0)
+#             if noise.shape[0] % len(gpu_ids) == 0:
+#                 pred_tex, pred_mesh_map, attn_map = trainer('inference', None, None, C=c, caption=caption, noise=noise)
+#             else:
+#                 # Batch dimension is not divisible by number of GPUs --> pad
+#                 original_bsz = noise.shape[0]
+#                 padding_bsz = len(gpu_ids) - (noise.shape[0] % len(gpu_ids))
+#                 def pad_batch(batch):
+#                     return torch.cat((batch, torch.zeros((padding_bsz, *batch.shape[1:]),
+#                                                          dtype=batch.dtype).to(batch.device)), dim=0)
                     
-                noise_pad = pad_batch(noise)
-                if c is not None:
-                    c_pad = pad_batch(c)
-                else:
-                    c_pad = None
-                if caption is not None:
-                    caption_pad = tuple([pad_batch(x) for x in caption])
-                else:
-                    caption_pad = None
-                pred_tex, pred_mesh_map, attn_map = trainer('inference', None, None, C=c_pad, caption=caption_pad, noise=noise_pad)
+#                 noise_pad = pad_batch(noise)
+#                 if c is not None:
+#                     c_pad = pad_batch(c)
+#                 else:
+#                     c_pad = None
+#                 if caption is not None:
+#                     caption_pad = tuple([pad_batch(x) for x in caption])
+#                 else:
+#                     caption_pad = None
+#                 pred_tex, pred_mesh_map, attn_map = trainer('inference', None, None, C=c_pad, caption=caption_pad, noise=noise_pad)
                 
-                # Unpad
-                pred_tex = pred_tex[:original_bsz]
-                pred_mesh_map = pred_mesh_map[:original_bsz]
-                if attn_map is not None:
-                    attn_map = attn_map[:original_bsz]
+#                 # Unpad
+#                 pred_tex = pred_tex[:original_bsz]
+#                 pred_mesh_map = pred_mesh_map[:original_bsz]
+#                 if attn_map is not None:
+#                     attn_map = attn_map[:original_bsz]
 
-            def render_and_score(input_mesh_map, input_texture, output_array):
-                vtx = mesh_template.get_vertex_positions(input_mesh_map)
-                vtx = qrot(data['rotation'], data['scale'].unsqueeze(-1)*vtx) + data['translation'].unsqueeze(1)
-                vtx = vtx * torch.Tensor([1, -1, -1]).to(vtx.device)
+#             def render_and_score(input_mesh_map, input_texture, output_array):
+#                 vtx = mesh_template.get_vertex_positions(input_mesh_map)
+#                 vtx = qrot(data['rotation'], data['scale'].unsqueeze(-1)*vtx) + data['translation'].unsqueeze(1)
+#                 vtx = vtx * torch.Tensor([1, -1, -1]).to(vtx.device)
 
-                image_pred, _ = mesh_template.forward_renderer(renderer, vtx, input_texture, len(gpu_ids))
-                image_pred = image_pred.permute(0, 3, 1, 2)/2 + 0.5
+#                 image_pred, _ = mesh_template.forward_renderer(renderer, vtx, input_texture, len(gpu_ids))
+#                 image_pred = image_pred.permute(0, 3, 1, 2)/2 + 0.5
                 
-                emb = forward_inception_batch(inception_model, image_pred)
-                output_array.append(emb)
-                return image_pred # Return images for visualization
+#                 emb = forward_inception_batch(inception_model, image_pred)
+#                 output_array.append(emb)
+#                 return image_pred # Return images for visualization
 
-            out_combined = render_and_score(pred_mesh_map, pred_tex, emb_arr_fake_combined)
+#             out_combined = render_and_score(pred_mesh_map, pred_tex, emb_arr_fake_combined)
             
-            mask, = np.where(np.isin(data['idx'].cpu().numpy(), indices_to_render))
-            if len(mask) > 0:
-                sample_fake.append(out_combined[mask].cpu())
-                sample_mesh_map_fake.append(pred_mesh_map[mask].cpu())
-                sample_tex_fake.append(pred_tex[mask].cpu())
-                if has_pseudogt:
-                    sample_real.append(data['image'][mask])
-                    sample_tex_real.append(data['texture'][mask].cpu())
-                if args.conditional_text:
-                    sample_text.append(caption[0][mask].cpu())
+#             mask, = np.where(np.isin(data['idx'].cpu().numpy(), indices_to_render))
+#             if len(mask) > 0:
+#                 sample_fake.append(out_combined[mask].cpu())
+#                 sample_mesh_map_fake.append(pred_mesh_map[mask].cpu())
+#                 sample_tex_fake.append(pred_tex[mask].cpu())
+#                 if has_pseudogt:
+#                     sample_real.append(data['image'][mask])
+#                     sample_tex_real.append(data['texture'][mask].cpu())
+#                 if args.conditional_text:
+#                     sample_text.append(caption[0][mask].cpu())
                 
-            if has_pseudogt:
-                out_combined = render_and_score(data['mesh'], pred_tex, emb_arr_fake_texture_only)
-                if len(mask) > 0:
-                    sample_fake_texture_only.append(out_combined[mask].cpu())
-                out_combined = render_and_score(pred_mesh_map, data['texture'], emb_arr_fake_mesh_only)
-                if len(mask) > 0:
-                    sample_fake_mesh_only.append(out_combined[mask].cpu())
+#             if has_pseudogt:
+#                 out_combined = render_and_score(data['mesh'], pred_tex, emb_arr_fake_texture_only)
+#                 if len(mask) > 0:
+#                     sample_fake_texture_only.append(out_combined[mask].cpu())
+#                 out_combined = render_and_score(pred_mesh_map, data['texture'], emb_arr_fake_mesh_only)
+#                 if len(mask) > 0:
+#                     sample_fake_mesh_only.append(out_combined[mask].cpu())
     
-    emb_arr_fake_combined = np.concatenate(emb_arr_fake_combined, axis=0)
-    if has_pseudogt:
-        emb_arr_fake_texture_only = np.concatenate(emb_arr_fake_texture_only, axis=0)
-        emb_arr_fake_mesh_only = np.concatenate(emb_arr_fake_mesh_only, axis=0)
-        sample_real = torch.cat(sample_real, dim=0)
-    sample_fake = torch.cat(sample_fake, dim=0)
-    sample_mesh_map_fake = torch.cat(sample_mesh_map_fake, dim=0)
-    sample_tex_fake = torch.cat(sample_tex_fake, dim=0)
-    if has_pseudogt:
-        sample_fake_texture_only = torch.cat(sample_fake_texture_only, dim=0)
-        sample_fake_mesh_only = torch.cat(sample_fake_mesh_only, dim=0)
-        sample_tex_real = torch.cat(sample_tex_real, dim=0)
-    if args.conditional_text:
-        sample_text = torch.cat(sample_text, dim=0)
-    if shuffle_idx is not None:
-        sample_fake = sample_fake[shuffle_idx]
-        sample_mesh_map_fake = sample_mesh_map_fake[shuffle_idx]
-        sample_tex_fake = sample_tex_fake[shuffle_idx]
-        if has_pseudogt:
-            sample_real = sample_real[shuffle_idx]
-            sample_fake_texture_only = sample_fake_texture_only[shuffle_idx]
-            sample_fake_mesh_only = sample_fake_mesh_only[shuffle_idx]
-            sample_tex_real = sample_tex_real[shuffle_idx]
-        if args.conditional_text:
-            sample_text = sample_text[shuffle_idx]
+#     emb_arr_fake_combined = np.concatenate(emb_arr_fake_combined, axis=0)
+#     if has_pseudogt:
+#         emb_arr_fake_texture_only = np.concatenate(emb_arr_fake_texture_only, axis=0)
+#         emb_arr_fake_mesh_only = np.concatenate(emb_arr_fake_mesh_only, axis=0)
+#         sample_real = torch.cat(sample_real, dim=0)
+#     sample_fake = torch.cat(sample_fake, dim=0)
+#     sample_mesh_map_fake = torch.cat(sample_mesh_map_fake, dim=0)
+#     sample_tex_fake = torch.cat(sample_tex_fake, dim=0)
+#     if has_pseudogt:
+#         sample_fake_texture_only = torch.cat(sample_fake_texture_only, dim=0)
+#         sample_fake_mesh_only = torch.cat(sample_fake_mesh_only, dim=0)
+#         sample_tex_real = torch.cat(sample_tex_real, dim=0)
+#     if args.conditional_text:
+#         sample_text = torch.cat(sample_text, dim=0)
+#     if shuffle_idx is not None:
+#         sample_fake = sample_fake[shuffle_idx]
+#         sample_mesh_map_fake = sample_mesh_map_fake[shuffle_idx]
+#         sample_tex_fake = sample_tex_fake[shuffle_idx]
+#         if has_pseudogt:
+#             sample_real = sample_real[shuffle_idx]
+#             sample_fake_texture_only = sample_fake_texture_only[shuffle_idx]
+#             sample_fake_mesh_only = sample_fake_mesh_only[shuffle_idx]
+#             sample_tex_real = sample_tex_real[shuffle_idx]
+#         if args.conditional_text:
+#             sample_text = sample_text[shuffle_idx]
         
-    if m_real_train is None:
-        emb_arr_real = np.concatenate(emb_arr_real, axis=0)
-        m_real_train, s_real_train = calculate_stats(emb_arr_real)
+#     if m_real_train is None:
+#         emb_arr_real = np.concatenate(emb_arr_real, axis=0)
+#         m_real_train, s_real_train = calculate_stats(emb_arr_real)
 
-    m1, s1 = calculate_stats(emb_arr_fake_combined)
-    fid = calculate_frechet_distance(m1, s1, m_real_train, s_real_train)
-    log('FID (training set): {:.02f}'.format(fid)) 
+#     m1, s1 = calculate_stats(emb_arr_fake_combined)
+#     fid = calculate_frechet_distance(m1, s1, m_real_train, s_real_train)
+#     log('FID (training set): {:.02f}'.format(fid)) 
 
-    if has_pseudogt:
-        m2, s2 = calculate_stats(emb_arr_fake_texture_only)
-        fid_texture = calculate_frechet_distance(m2, s2, m_real_train, s_real_train)
-        log('Texture-only FID (training set): {:.02f}'.format(fid_texture))
+#     if has_pseudogt:
+#         m2, s2 = calculate_stats(emb_arr_fake_texture_only)
+#         fid_texture = calculate_frechet_distance(m2, s2, m_real_train, s_real_train)
+#         log('Texture-only FID (training set): {:.02f}'.format(fid_texture))
 
-        m3, s3 = calculate_stats(emb_arr_fake_mesh_only)
-        fid_mesh = calculate_frechet_distance(m3, s3, m_real_train, s_real_train)
-        log('Mesh-only FID (training set): {:.02f}'.format(fid_mesh))
+#         m3, s3 = calculate_stats(emb_arr_fake_mesh_only)
+#         fid_mesh = calculate_frechet_distance(m3, s3, m_real_train, s_real_train)
+#         log('Mesh-only FID (training set): {:.02f}'.format(fid_mesh))
     
-    if m_real_val is not None and not fast:
-        # Make sure the number of images is the same as that of the test set
-        if args.evaluate:
-            np.random.seed(1234)
-        val_indices = np.random.choice(len(train_ds), size=n_images_val, replace=False)
+#     if m_real_val is not None and not fast:
+#         # Make sure the number of images is the same as that of the test set
+#         if args.evaluate:
+#             np.random.seed(1234)
+#         val_indices = np.random.choice(len(train_ds), size=n_images_val, replace=False)
         
-        m1_val, s1_val = calculate_stats(emb_arr_fake_combined[val_indices])
-        fid_val = calculate_frechet_distance(m1_val, s1_val, m_real_val, s_real_val)
-        log('FID (validation set): {:.02f}'.format(fid_val))
+#         m1_val, s1_val = calculate_stats(emb_arr_fake_combined[val_indices])
+#         fid_val = calculate_frechet_distance(m1_val, s1_val, m_real_val, s_real_val)
+#         log('FID (validation set): {:.02f}'.format(fid_val))
 
-        if has_pseudogt:
-            m2_val, s2_val = calculate_stats(emb_arr_fake_texture_only[val_indices])
-            fid_texture_val = calculate_frechet_distance(m2_val, s2_val, m_real_val, s_real_val)
-            log('Texture-only FID (validation set): {:.02f}'.format(fid_texture_val))
+#         if has_pseudogt:
+#             m2_val, s2_val = calculate_stats(emb_arr_fake_texture_only[val_indices])
+#             fid_texture_val = calculate_frechet_distance(m2_val, s2_val, m_real_val, s_real_val)
+#             log('Texture-only FID (validation set): {:.02f}'.format(fid_texture_val))
 
-            m3_val, s3_val = calculate_stats(emb_arr_fake_mesh_only[val_indices])
-            fid_mesh_val = calculate_frechet_distance(m3_val, s3_val, m_real_val, s_real_val)
-            log('Mesh-only FID (validation set): {:.02f}'.format(fid_mesh_val))
+#             m3_val, s3_val = calculate_stats(emb_arr_fake_mesh_only[val_indices])
+#             fid_mesh_val = calculate_frechet_distance(m3_val, s3_val, m_real_val, s_real_val)
+#             log('Mesh-only FID (validation set): {:.02f}'.format(fid_mesh_val))
     
-    if args.tensorboard and not args.evaluate:
-        writer.add_image('image/real_tex', to_grid_tex(sample_tex_real), it)
-        writer.add_image('image/fake_tex', to_grid_tex(sample_tex_fake), it)
-        writer.add_image('image/fake_mesh', to_grid_mesh(sample_mesh_map_fake), it)
+#     if args.tensorboard and not args.evaluate:
+#         writer.add_image('image/real_tex', to_grid_tex(sample_tex_real), it)
+#         writer.add_image('image/fake_tex', to_grid_tex(sample_tex_fake), it)
+#         writer.add_image('image/fake_mesh', to_grid_mesh(sample_mesh_map_fake), it)
         
-        grid_fake = torchvision.utils.make_grid(sample_fake, nrow=4)
-        grid_fake_texture_only = torchvision.utils.make_grid(sample_fake_texture_only, nrow=4)
-        grid_fake_mesh_only = torchvision.utils.make_grid(sample_fake_mesh_only, nrow=4)
-        grid_real = torchvision.utils.make_grid(sample_real, nrow=4)
-        writer.add_image('render/fake', grid_fake, it)
-        writer.add_image('render/fake_texture', grid_fake_texture_only, it)
-        writer.add_image('render/fake_mesh', grid_fake_mesh_only, it)
-        writer.add_image('render/real', grid_real, it)
+#         grid_fake = torchvision.utils.make_grid(sample_fake, nrow=4)
+#         grid_fake_texture_only = torchvision.utils.make_grid(sample_fake_texture_only, nrow=4)
+#         grid_fake_mesh_only = torchvision.utils.make_grid(sample_fake_mesh_only, nrow=4)
+#         grid_real = torchvision.utils.make_grid(sample_real, nrow=4)
+#         writer.add_image('render/fake', grid_fake, it)
+#         writer.add_image('render/fake_texture', grid_fake_texture_only, it)
+#         writer.add_image('render/fake_mesh', grid_fake_mesh_only, it)
+#         writer.add_image('render/real', grid_real, it)
         
-        if args.conditional_text:
-            full_text = ''
-            for idx, text in enumerate(sample_text):
-                full_text += f'{idx}. '
-                for wi in text:
-                    wi = wi.item()
-                    if wi == 0:
-                        # Padding token
-                        break
-                    else:
-                        full_text += train_ds.text_processor.ixtoword[wi] + ' '
-                full_text += '  \n'
-            writer.add_text('render/caption', full_text, it)
+#         if args.conditional_text:
+#             full_text = ''
+#             for idx, text in enumerate(sample_text):
+#                 full_text += f'{idx}. '
+#                 for wi in text:
+#                     wi = wi.item()
+#                     if wi == 0:
+#                         # Padding token
+#                         break
+#                     else:
+#                         full_text += train_ds.text_processor.ixtoword[wi] + ' '
+#                 full_text += '  \n'
+#             writer.add_text('render/caption', full_text, it)
         
-        writer.add_scalar('fid/combined', fid, it)
-        if m_real_val is not None:
-            writer.add_scalar('fid/combined_val', fid_val, it)
-        writer.add_scalar('fid/texture_only', fid_texture, it)
-        writer.add_scalar('fid/mesh_only', fid_mesh, it)
+#         writer.add_scalar('fid/combined', fid, it)
+#         if m_real_val is not None:
+#             writer.add_scalar('fid/combined_val', fid_val, it)
+#         writer.add_scalar('fid/texture_only', fid_texture, it)
+#         writer.add_scalar('fid/mesh_only', fid_mesh, it)
         
-    return fid
+#     return fid
 
 
 
@@ -878,25 +931,25 @@ elif args.export_sample:
         for i, v in enumerate(vtx_obj):
             mesh_template.export_obj(os.path.join(output_dir, f'mesh_{i}'), v, pred_tex[i]/2 + 0.5)
             
-        rotation = train_ds.data['rotation'][indices].cuda()
-        scale = train_ds.data['scale'][indices].cuda()
-        translation = train_ds.data['translation'][indices].cuda()
+        # rotation = train_ds.data['rotation'][indices].cuda()
+        # scale = train_ds.data['scale'][indices].cuda()
+        # translation = train_ds.data['translation'][indices].cuda()
         
-        vtx = qrot(rotation, scale.unsqueeze(-1)*vtx) + translation.unsqueeze(1)
-        vtx = vtx * torch.Tensor([1, -1, -1]).to(vtx.device)
+        # vtx = qrot(rotation, scale.unsqueeze(-1)*vtx) + translation.unsqueeze(1)
+        # vtx = vtx * torch.Tensor([1, -1, -1]).to(vtx.device)
 
-        image_pred, alpha_pred = mesh_template.forward_renderer(renderer, vtx, pred_tex,
-                                                                num_gpus=len(gpu_ids),
-                                                                return_hardmask=True)
-        image_pred[alpha_pred.expand_as(image_pred) == 0] = 1
-        image_pred = image_pred.permute(0, 3, 1, 2)/2 + 0.5
-        image_pred = F.avg_pool2d(image_pred, 2) # Anti-aliasing
+        # image_pred, alpha_pred = mesh_template.forward_renderer(renderer, vtx, pred_tex,
+        #                                                         num_gpus=len(gpu_ids),
+        #                                                         return_hardmask=True)
+        # image_pred[alpha_pred.expand_as(image_pred) == 0] = 1
+        # image_pred = image_pred.permute(0, 3, 1, 2)/2 + 0.5
+        # image_pred = F.avg_pool2d(image_pred, 2) # Anti-aliasing
 
-        import imageio
-        import torchvision
-        image_grid = torchvision.utils.make_grid(image_pred, nrow=8, padding=0)
-        image_grid = (image_grid.permute(1, 2, 0)*255).clamp(0, 255).cpu().byte().numpy()
-        imageio.imwrite(f'output/{args.name}.png', image_grid)
+        # import imageio
+        # import torchvision
+        # image_grid = torchvision.utils.make_grid(image_pred, nrow=8, padding=0)
+        # image_grid = (image_grid.permute(1, 2, 0)*255).clamp(0, 255).cpu().byte().numpy()
+        # imageio.imwrite(f'output/{args.name}.png', image_grid)
     
     
 if writer is not None:
