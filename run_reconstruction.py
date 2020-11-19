@@ -94,10 +94,15 @@ renderer = Renderer(renderer_res, renderer_res)
 from skimage.io import imread
 from skimage.transform import resize
 class ImageSofaset(torch.utils.data.Dataset):
-    # python run_reconstruction.py --name sofa_hd --dataset sofa --batch_size 2
-    def __init__(self):
+    # python run_reconstruction.py --name sofa_hd --dataset sofa --batch_size 3
+    # python run_reconstruction.py --name sofa_hd --dataset sofa --batch_size 3 --generate_pseudogt
+    def __init__(self, img_sizes):
         self.dataset = "sofa"
         self.res = args.image_resolution
+        self.img_sizes = img_sizes
+        self.paths = ["/home/ubuntu/work/convmesh/sofa_data/1.png",
+                        "/home/ubuntu/work/convmesh/sofa_data/2.png",
+                        "/home/ubuntu/work/convmesh/sofa_data/3.png"]
 
     def __len__(self):
         return 3
@@ -119,13 +124,20 @@ class ImageSofaset(torch.utils.data.Dataset):
         # mask = mask[:,:,1]
         # img *= mask[np.newaxis, :, :]
         img *= mask
+        extra_imgs = []
+        if len(self.img_sizes)==3:
+            img_inception = resize(img, (self.img_sizes[1],self.img_sizes[1]),anti_aliasing=True)
+            img_inception = torch.FloatTensor(img_inception).permute(2,0,1)
+            img_hd = resize(img, (self.img_sizes[2],self.img_sizes[2]),anti_aliasing=True)
+            img_hd = torch.FloatTensor(img_hd).permute(2,0,1)
+            extra_imgs = [img_inception, img_hd]
+
         img = torch.FloatTensor(img)
         img = img.permute(2,0,1)
         mask = torch.FloatTensor(mask)
         mask = mask.permute(2,0,1)
         ind = torch.LongTensor([index])
         
-        extra_imgs = []
         scale = torch.FloatTensor([100.1])
         # trans = torch.FloatTensor([[200.2],[151.1]])
         trans = torch.FloatTensor([0,0.1,0])
@@ -224,8 +236,8 @@ elif dataset_type == 'cub':
     debug_ids = [0, 1, 12, 18, 20, 42, 72, 100, 101, 115, 123, 125, 142, 158, 188, 203] # For TensorBoard
 
 elif dataset_type == 'sofa':
-    mesh_ds_train = ImageSofaset()
-    mesh_ds_val = ImageSofaset()
+    mesh_ds_train = ImageSofaset(dataloader_resolution)
+    mesh_ds_val = ImageSofaset(dataloader_resolution_val)
 else:
     raise
 
@@ -295,8 +307,8 @@ def transform_vertices(vtx, gt_scale, gt_translation, gt_rot, gt_idx):
     else:
         scale_delta = 0
         translation_delta = 0
-    print("a: ",qrot(gt_rot, (gt_scale + scale_delta).unsqueeze(-1)*vtx).shape)
-    print("b: ",(gt_translation + translation_delta).unsqueeze(1).shape)
+    # print("a: ",qrot(gt_rot, (gt_scale + scale_delta).unsqueeze(-1)*vtx).shape)
+    # print("b: ",(gt_translation + translation_delta).unsqueeze(1).shape)
     # print("tran: ",gt_translation,"trans_delta",translation_delta)
     vtx = qrot(gt_rot, (gt_scale + scale_delta).unsqueeze(-1)*vtx) + (gt_translation + translation_delta).unsqueeze(1)
     vtx = vtx * torch.Tensor([1, -1, -1]).to(vtx.device)
@@ -655,6 +667,7 @@ elif args.generate_pseudogt:
             for i, idx in enumerate(indices):
                 idx = idx.item()
                 all_path.append(train_loader.dataset.paths[idx])
+                # import ipdb; ipdb.set_trace() 
                 
                 pseudogt = {
                     'mesh': mesh_map[i].cpu().clone(),
